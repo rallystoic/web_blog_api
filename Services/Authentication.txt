@@ -1,0 +1,149 @@
+using System; 
+using System.Text;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using System.Linq;
+using Microsoft.AspNetCore.Cryptography.KeyDerivation;
+using System.Security.Cryptography;
+//folder
+using Blogapp.Models;
+using Blogapp.Helper;
+//jwt
+using System.IdentityModel.Tokens.Jwt;
+using Microsoft.IdentityModel.Tokens;
+using System.Security.Claims; 
+using Microsoft.EntityFrameworkCore; 
+namespace Blogapp.Services
+{
+	public  interface IAuthentication
+	{
+
+		// register method
+		bool register(string uname,string upassword); 
+		// authentication method
+		Task<ValidateInfomation> authenticate(string uname, string upassword);   
+	}
+	public class Authentication : IAuthentication
+	{
+		private readonly BlogContext _db;
+		private readonly ConnectionStrings _config;
+		public Authentication(BlogContext db,ConnectionStrings config)
+		{
+			_db = db;
+			_config = config;
+		}
+		//creatUser and save to database
+		public bool  register(string uname, string upassword)
+		{
+			bool iscreated = true ;
+			if(upassword.Length<6 )
+			{
+				iscreated = false;
+				return iscreated;
+			} 
+			using (_db)
+			{
+				var ee  =  _db.Users.FirstOrDefault(x=> x.UserName == uname);
+				if(ee != null)
+				{
+
+					iscreated = false;
+					return iscreated;
+				}
+				byte[] Randomsalt = new byte[128 / 8];
+				using (var rng = RandomNumberGenerator.Create())
+				{
+					rng.GetBytes(Randomsalt);
+				}
+
+				string saltTostring = Convert.ToBase64String(Randomsalt);
+				byte[] getBytesalt = Encoding.ASCII.GetBytes(saltTostring);
+				string Hashed = Convert.ToBase64String(KeyDerivation.Pbkdf2(
+							password: upassword,
+							salt: getBytesalt,
+
+							prf : KeyDerivationPrf.HMACSHA256,
+							iterationCount: 10000,
+							numBytesRequested: 256 / 8));
+				var salted = Convert.ToBase64String(Randomsalt); 
+
+				User newuser = new User { UserName = uname,UserSalt = salted,UserHashed = Hashed,RoleID = 2 };
+				_db.Users.Add(newuser);
+				_db.SaveChanges();             
+				return iscreated;
+			}
+		}
+		//login
+		public async Task<ValidateInfomation> authenticate(string uname, string upassword)
+		{
+
+			ValidateInfomation validateinfomation = new ValidateInfomation();
+			using (_db)
+			{
+				User finduser = await _db.Users.FirstOrDefaultAsync(x=> x.UserName == uname);
+				if (finduser == null)
+				{
+					validateinfomation.IsSucceed = false;
+					return validateinfomation;
+
+				}
+				//get role 
+				Role getrole = _db.Roles.FirstOrDefault(s => s.RoleID == finduser.RoleID);
+
+				Byte[] saltx = Encoding.ASCII.GetBytes(finduser.UserSalt);
+				// client send a password to be hashed with a salt from user stored in database
+
+				string hashed = Convert.ToBase64String(KeyDerivation.Pbkdf2(
+							password: upassword,
+							salt: saltx,
+							// prf: KeyDerivationPrf.HMACSHA1,
+							prf : KeyDerivationPrf.HMACSHA256,
+							iterationCount: 10000,
+							numBytesRequested: 256 / 8));
+				//Console.WriteLine(hashed);
+				bool isvalid = hashed.Equals(finduser.UserHashed);
+
+				//  Console.WriteLine("username or password invalid");
+				// Console.WriteLine("username or password invalid");
+				//System.Console.WriteLine(isvalid);
+				if(isvalid != false)
+				{
+					string secret = _config.Secret;                                                                                                                 
+					// byte key will be use inside tokendesriptor()
+					var key = Encoding.ASCII.GetBytes(secret); 
+					var Jwtokenmaker =  new JwtSecurityTokenHandler(); 
+					// Claim collection to be pass on jwt
+					IList<Claim> claimcollection = new List<Claim> 
+					{ 
+						new Claim("username",finduser.UserName),
+						    new Claim("role",getrole.RoleName),
+							    new Claim("userid",getrole.RoleName),
+							    new Claim("role",getrole.RoleName)
+					};
+					ClaimsIdentity myclaim = new ClaimsIdentity(claimcollection);
+					var tokendescriptor = new SecurityTokenDescriptor
+					{ 
+						Subject = myclaim, 
+							Expires = DateTime.Now.AddHours(6),  
+							SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature) 
+					};  // now creat a token with  tokendescriptor! 
+					var token  = Jwtokenmaker.CreateToken(tokendescriptor);
+					validateinfomation.IsSucceed = true;
+					validateinfomation.Token = Jwtokenmaker.WriteToken(token);
+					validateinfomation.UserID = finduser.UserID;
+					validateinfomation.Firstname = finduser.UserFirstName;
+					validateinfomation.Lastname = finduser.UserLastName;
+					validateinfomation.role = getrole.RoleName;
+
+					return validateinfomation;
+				}
+				validateinfomation.IsSucceed = false;
+				return validateinfomation;
+
+			}
+		}
+
+
+	}
+}
+
